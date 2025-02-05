@@ -3,6 +3,17 @@ const pool = require("../config/db");
 
 exports.createTenant = async (req, res) => {
   try {
+    const { unit_number } = req.body;
+
+    const { rows: existingUnit } = await pool.query(
+      `SELECT * FROM tenants WHERE unit_number = $1`,
+      [unit_number]
+    );
+
+    if (existingUnit.length > 0) {
+      return res.status(400).json({ error: "Unit number already exists" });
+    }
+
     const { rows } = await pool.query(
       `INSERT INTO tenants (
         tenant_id, 
@@ -12,8 +23,9 @@ exports.createTenant = async (req, res) => {
         monthly_rent, 
         due_date, 
         number_of_occupants, 
-        contract_start_date
-      ) VALUES (uuid_generate_v4(), $1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+        contract_start_date,
+        unit_number
+      ) VALUES (uuid_generate_v4(), $1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
       [
         req.body.full_name,
         req.body.contact_number,
@@ -22,8 +34,10 @@ exports.createTenant = async (req, res) => {
         req.body.due_date,
         req.body.number_of_occupants,
         req.body.contract_start_date,
+        unit_number,
       ]
     );
+
     res
       .status(201)
       .json({ message: "Tenant created successfully", tenant: rows[0] });
@@ -39,32 +53,30 @@ exports.getAllTenants = async (req, res) => {
     let conditions = [];
     let values = [];
 
-    // ✅ Search filter (case-insensitive match using ILIKE)
-    if (search) {
+    if (search && search.trim() !== "") {
       values.push(`%${search}%`);
       conditions.push(`full_name ILIKE $${values.length}`);
     }
 
-    // ✅ Active status filter (convert "true"/"false" string to boolean)
     if (active !== undefined) {
       values.push(active === "true");
       conditions.push(`is_active = $${values.length}`);
     }
 
-    // ✅ Add WHERE clause if conditions exist
     if (conditions.length > 0) {
       query += ` WHERE ` + conditions.join(" AND ");
     }
 
-    // ✅ Allow only certain columns for sorting to prevent SQL injection
     const allowedSortFields = ["full_name", "created_at", "is_active"];
     if (sortBy && allowedSortFields.includes(sortBy)) {
       const sortDirection = sortOrder === "desc" ? "DESC" : "ASC";
       query += ` ORDER BY ${sortBy} ${sortDirection}`;
+    } else {
+      query += ` ORDER BY created_at DESC`;
     }
 
-    // ✅ Execute query safely
     const { rows } = await pool.query(query, values);
+    console.log(rows);
     res.json({ tenants: rows });
   } catch (error) {
     console.error("Database error:", error);
@@ -119,6 +131,17 @@ exports.deleteTenant = async (req, res) => {
 
 exports.updateTenant = async (req, res) => {
   try {
+    const { unit_number, tenant_id } = req.body;
+
+    const { rows: existingUnit } = await pool.query(
+      `SELECT * FROM tenants WHERE unit_number = $1 AND tenant_id != $2`,
+      [unit_number, req.params.id]
+    );
+
+    if (existingUnit.length > 0) {
+      return res.status(400).json({ error: "Unit number already exists" });
+    }
+
     const { rows } = await pool.query(
       `UPDATE tenants SET 
         full_name = $1, 
@@ -127,8 +150,9 @@ exports.updateTenant = async (req, res) => {
         monthly_rent = $4, 
         due_date = $5, 
         number_of_occupants = $6, 
-        contract_start_date = $7 
-      WHERE tenant_id = $8 RETURNING *`,
+        contract_start_date = $7,
+        unit_number = $8 
+      WHERE tenant_id = $9 RETURNING *`,
       [
         req.body.full_name,
         req.body.contact_number,
@@ -137,9 +161,11 @@ exports.updateTenant = async (req, res) => {
         req.body.due_date,
         req.body.number_of_occupants,
         req.body.contract_start_date,
+        unit_number,
         req.params.id,
       ]
     );
+
     res.json({ message: "Tenant updated successfully", tenant: rows[0] });
   } catch (error) {
     res.status(500).json({ error: error.message });
