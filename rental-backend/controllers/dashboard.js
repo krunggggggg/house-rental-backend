@@ -16,6 +16,32 @@ exports.getMetrics = async (req, res) => {
           )::DATE AS current_due_date
         FROM tenants t
         WHERE t.is_active = TRUE
+      ),
+      resolved_payments AS (
+        SELECT 
+          rp.tenant_id,
+          MAX(rp.payment_end_date) AS last_payment_date,
+          rp.is_paid
+        FROM rent_payments rp
+        WHERE rp.is_paid = TRUE
+        GROUP BY rp.tenant_id, rp.is_paid
+      ),
+      adjusted_due_dates AS (
+        SELECT 
+          d.tenant_id,
+          d.full_name,
+          d.monthly_rent,
+          d.current_due_date,
+          rp.last_payment_date,
+          rp.is_paid,
+          CASE 
+            -- If the tenant has a resolved payment for the current due date, calculate the next due date
+            WHEN rp.last_payment_date IS NOT NULL AND EXTRACT(DAY FROM rp.last_payment_date) = EXTRACT(DAY FROM d.current_due_date) THEN 
+              (rp.last_payment_date + INTERVAL '1 month')::DATE
+            ELSE d.current_due_date
+          END AS adjusted_due_date
+        FROM due_dates d
+        LEFT JOIN resolved_payments rp ON d.tenant_id = rp.tenant_id
       )
       SELECT 
         (SELECT COUNT(*) FROM tenants WHERE is_active = TRUE) as "totalTenants",
@@ -23,28 +49,39 @@ exports.getMetrics = async (req, res) => {
         COALESCE(
           json_agg(
             json_build_object(
-              'tenant_id', d.tenant_id,
-              'full_name', d.full_name,
-              'monthly_rent', d.monthly_rent,
-              'due_date', TO_CHAR(d.current_due_date, 'YYYY-MM-DD'),
+              'tenant_id', a.tenant_id,
+              'full_name', a.full_name,
+              'monthly_rent', a.monthly_rent,
+              'due_date', TO_CHAR(a.adjusted_due_date, 'YYYY-MM-DD'),
               'days_diff', 
                 CASE 
-                  WHEN CURRENT_DATE > d.current_due_date 
-                  THEN CURRENT_DATE - d.current_due_date 
-                  ELSE d.current_due_date - CURRENT_DATE 
+                  WHEN CURRENT_DATE > a.adjusted_due_date 
+                  THEN CURRENT_DATE - a.adjusted_due_date 
+                  ELSE a.adjusted_due_date - CURRENT_DATE 
                 END,
               'status', 
                 CASE 
-                  WHEN CURRENT_DATE > d.current_due_date THEN 'overdue'
-                  WHEN d.current_due_date - CURRENT_DATE <= 5 THEN 'upcoming'
+                  WHEN CURRENT_DATE > a.adjusted_due_date THEN 'overdue'
+                  WHEN a.adjusted_due_date - CURRENT_DATE <= 5 THEN 'upcoming'
                   ELSE 'current'
-                END
+                END,
+              'is_paid', 
+                CASE 
+                  WHEN a.is_paid = TRUE AND EXTRACT(DAY FROM a.last_payment_date) = EXTRACT(DAY FROM a.current_due_date) THEN TRUE
+                  ELSE FALSE
+                END,
+              'debug_info', 
+                json_build_object(
+                  'current_due_date', TO_CHAR(a.current_due_date, 'YYYY-MM-DD'),
+                  'last_payment_date', TO_CHAR(a.last_payment_date, 'YYYY-MM-DD'),
+                  'adjusted_due_date', TO_CHAR(a.adjusted_due_date, 'YYYY-MM-DD')
+                )
             ) 
-            ORDER BY d.current_due_date
+            ORDER BY a.adjusted_due_date
           ),
           '[]'::JSON
         ) as "upcomingDueDates"
-      FROM due_dates d;
+      FROM adjusted_due_dates a;
     `);
 
     res.json({
